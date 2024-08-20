@@ -186,10 +186,10 @@ from flask import Flask, Response
 import requests
 import json
 import pandas as pd
-import numpy as np
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense
 from sklearn.preprocessing import MinMaxScaler
+import numpy as np
 
 # create our Flask app
 app = Flask(__name__)
@@ -211,24 +211,34 @@ def get_coingecko_url(token):
     else:
         raise ValueError("Unsupported token")
 
-def prepare_data(data, time_step=10):
-    """Prepare the data for LSTM model."""
-    x, y = [], []
-    for i in range(len(data) - time_step - 1):
-        x.append(data[i:(i + time_step), 0])
-        y.append(data[i + time_step, 0])
-    return np.array(x), np.array(y)
+def prepare_data(df):
+    # Нормализация данных
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    scaled_data = scaler.fit_transform(df["y"].values.reshape(-1, 1))
+
+    # Формирование последовательностей для обучения модели
+    sequence_length = 60
+    X = []
+    y = []
+    for i in range(sequence_length, len(scaled_data)):
+        X.append(scaled_data[i-sequence_length:i, 0])
+        y.append(scaled_data[i, 0])
+    X, y = np.array(X), np.array(y)
+
+    # Преобразование данных в форму [samples, time steps, features]
+    X = np.reshape(X, (X.shape[0], X.shape[1], 1))
+
+    return X, y, scaler
 
 def build_lstm_model(input_shape):
-    """Build and return an LSTM model."""
     model = Sequential()
-    model.add(LSTM(50, return_sequences=True, input_shape=input_shape))
-    model.add(LSTM(50, return_sequences=False))
-    model.add(Dense(25))
-    model.add(Dense(1))
+    model.add(LSTM(units=50, return_sequences=True, input_shape=input_shape))
+    model.add(LSTM(units=50, return_sequences=False))
+    model.add(Dense(units=1))
     model.compile(optimizer='adam', loss='mean_squared_error')
     return model
 
+# define our endpoint
 @app.route("/inference/<string:token>")
 def get_inference(token):
     """Generate inference for given token."""
@@ -240,7 +250,7 @@ def get_inference(token):
 
     headers = {
         "accept": "application/json",
-        "x-cg-demo-api-key": "$api_coin"  # Replace with your API key
+        "x-cg-demo-api-key": "CG-XXXXXXXXXXXXXXXXXXXXXX"  # Replace with your API key
     }
 
     response = requests.get(url, headers=headers)
@@ -249,35 +259,29 @@ def get_inference(token):
         df = pd.DataFrame(data["prices"])
         df.columns = ["ds", "y"]
         df["ds"] = pd.to_datetime(df["ds"], unit='ms')
-        df = df[["ds", "y"]]
         print(df.tail(5))
     else:
         return Response(json.dumps({"Failed to retrieve data from the API": str(response.text)}),
                         status=response.status_code,
                         mimetype='application/json')
 
-    # Preprocess the data
-    scaler = MinMaxScaler(feature_range=(0, 1))
-    scaled_data = scaler.fit_transform(df["y"].values.reshape(-1, 1))
+    # Prepare data for LSTM
+    X, y, scaler = prepare_data(df)
 
-    time_step = 10
-    x, y = prepare_data(scaled_data, time_step)
+    # Build and train the LSTM model
+    model = build_lstm_model((X.shape[1], 1))
+    model.fit(X, y, epochs=5, batch_size=32, verbose=1)
 
-    # Reshape data for LSTM (samples, time steps, features)
-    x = x.reshape(x.shape[0], x.shape[1], 1)
+    # Make a forecast for the next 10-20 minutes
+    last_sequence = df["y"].values[-60:].reshape(-1, 1)
+    last_sequence_scaled = scaler.transform(last_sequence)
+    X_new = np.array([last_sequence_scaled])
+    X_new = np.reshape(X_new, (X_new.shape[0], X_new.shape[1], 1))
 
-    # Build the LSTM model
-    model = build_lstm_model((x.shape[1], 1))
+    predicted_value_scaled = model.predict(X_new)
+    predicted_value = scaler.inverse_transform(predicted_value_scaled)
 
-    # Train the model
-    model.fit(x, y, batch_size=1, epochs=10, verbose=1)
-
-    # Make a prediction for the next 10 or 20 minutes
-    last_sequence = scaled_data[-time_step:]
-    last_sequence = last_sequence.reshape(1, time_step, 1)
-    forecasted_value = model.predict(last_sequence)
-    forecasted_value = scaler.inverse_transform(forecasted_value)[0][0]
-
+    forecasted_value = predicted_value[0, 0]
     print(forecasted_value)  # Print the forecasted value
 
     return Response(str(forecasted_value), status=200)
@@ -285,6 +289,7 @@ def get_inference(token):
 # run our Flask app
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=8000, debug=True)
+
 EOF
 
             rm -rf requirements.txt
