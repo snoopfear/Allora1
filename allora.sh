@@ -300,6 +300,9 @@ python-dotenv
 requests==2.31.0
 plotly
 prophet
+tensorflow==2.12.0
+scikit-learn
+
 EOF
 
             log_message "Запуск Allora Worker..."
